@@ -1,0 +1,84 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# This repository is a Faz 3 scaffold: there is no crate yet, so there is nothing
+# for cargo to build. Rust jobs are written out below and enabled in the same
+# commit that adds Cargo.toml -- deliberately visible rather than added later,
+# because a scaffold whose CI was never designed tends to land without one.
+
+jobs:
+  meta:
+    name: docs · licences
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: fsfe/reuse-action@v5
+      - name: Environment example must not ship open defaults (madde 25, 27)
+        run: |
+          test -f .env.example
+          grep -q '^EON_PEER_DISTRIBUTION=off' .env.example
+          grep -q '^EON_PEER_LOCAL_NETWORK_ONLY=true' .env.example
+          grep -q '^EON_REQUIRE_SCAN=true' .env.example
+      - name: No telemetry in configuration or source (madde 36)
+        # Prose may discuss telemetry; configuration and code may not introduce it.
+        # Scoped to those paths so the check cannot match its own description.
+        run: |
+          if grep -rIn -iE 'telemetry|analytics|sentry\.io|mixpanel' \
+               .env.example src deploy 2>/dev/null; then
+            echo "::error::telemetry-shaped configuration or code found (madde 36)"
+            exit 1
+          fi
+
+  rust:
+    name: fmt · clippy · test
+    runs-on: ${{ matrix.os }}
+    # Enable with the commit that adds Cargo.toml.
+    if: false
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --all-features
+
+  deny:
+    name: licences · advisories
+    runs-on: ubuntu-latest
+    if: false
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check all
+
+  dco:
+    name: signed-off commits
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Every commit must carry Signed-off-by
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          missing=0
+          while read -r sha; do
+            if ! git log -1 --format=%B "$sha" | grep -qiE '^Signed-off-by: .+ <.+@.+>$'; then
+              echo "::error::missing Signed-off-by: $(git log -1 --oneline "$sha")"
+              missing=1
+            fi
+          done < <(git rev-list "$base..$head")
+          exit $missing
